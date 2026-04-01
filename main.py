@@ -44,7 +44,7 @@ def _print_sentence_feedback(result: SentenceVoiceResult) -> None:
     print(f"Confidence: {result.confidence:.2f}")
     print(f"Rate: {result.rate}")
     print(f"Volume: {result.volume:.2f}")
-    print(f"Voice: {result.voice_used}")
+    print(f"Pitch Shift (semitones): {result.pitch_shift:+d}")
     print("-" * 50)
 
 

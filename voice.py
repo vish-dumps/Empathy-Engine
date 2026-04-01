@@ -1,24 +1,34 @@
-"""Voice synthesis with sentence-wise transformer emotion modulation."""
+"""Voice synthesis with sentence-wise modulation and pitch post-processing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 import random
+import shutil
 import sys
 import tempfile
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
-import wave
 
 import pyttsx3
 
+from audio_processing import change_pitch, merge_wav_files
 from emotion import SentenceEmotion
 
 RATE_MIN = 120
 RATE_MAX = 230
 VOLUME_MIN = 0.5
 VOLUME_MAX = 1.0
+
+PITCH_STEPS_BY_EMOTION = {
+    "joy": 2,
+    "surprise": 3,
+    "sadness": -2,
+    "fear": -1,
+    "anger": 1,
+    "neutral": 0,
+}
 
 
 @dataclass(frozen=True)
@@ -28,7 +38,7 @@ class SentenceVoiceResult:
     confidence: float
     rate: int
     volume: float
-    voice_used: str
+    pitch_shift: int
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -75,34 +85,9 @@ def modulation_from_emotion(
     )
 
 
-def _select_voice_for_emotion(
-    voices: Sequence[object],
-    emotion: str,
-    fallback_voice_id: str,
-) -> Tuple[str, str]:
-    """Select voice ID and human-readable voice name for the emotion."""
-    if not voices:
-        return fallback_voice_id, "default"
-
-    label = emotion.strip().lower()
-    if label in {"joy", "surprise"}:
-        index = 0
-    elif label in {"sadness", "fear"}:
-        index = 1 if len(voices) > 1 else 0
-    elif label == "anger":
-        if len(voices) > 2:
-            index = 2
-        elif len(voices) > 1:
-            index = 1
-        else:
-            index = 0
-    else:
-        index = 0
-
-    selected = voices[index]
-    voice_id = str(getattr(selected, "id", fallback_voice_id))
-    voice_name = str(getattr(selected, "name", voice_id))
-    return voice_id, voice_name
+def pitch_shift_from_emotion(emotion: str) -> int:
+    """Get semitone pitch shift for detected emotion."""
+    return int(PITCH_STEPS_BY_EMOTION.get(emotion.strip().lower(), 0))
 
 
 def _apply_transition_smoothing(
@@ -125,8 +110,8 @@ def _apply_transition_smoothing(
     )
 
 
-def _wait_for_audio_file(path: Path, timeout_seconds: float = 2.0) -> None:
-    """Wait briefly for pyttsx3 to flush audio to disk."""
+def _wait_for_audio_file(path: Path, timeout_seconds: float = 3.0) -> None:
+    """Wait briefly for pyttsx3/audio writers to flush to disk."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if path.exists() and path.stat().st_size > 44:
@@ -134,48 +119,6 @@ def _wait_for_audio_file(path: Path, timeout_seconds: float = 2.0) -> None:
         time.sleep(0.05)
 
     raise RuntimeError(f"Failed to render audio file: {path}")
-
-
-def _merge_wav_files(
-    sentence_files: Sequence[Path],
-    output_file: Path,
-    pauses: Sequence[float],
-) -> None:
-    if not sentence_files:
-        raise ValueError("No sentence audio files were provided for merging.")
-
-    with wave.open(str(sentence_files[0]), "rb") as first_reader:
-        params = first_reader.getparams()
-
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(output_file), "wb") as writer:
-        writer.setparams(params)
-
-        for index, sentence_file in enumerate(sentence_files):
-            with wave.open(str(sentence_file), "rb") as reader:
-                if (
-                    reader.getnchannels() != params.nchannels
-                    or reader.getsampwidth() != params.sampwidth
-                    or reader.getframerate() != params.framerate
-                    or reader.getcomptype() != params.comptype
-                ):
-                    raise RuntimeError(
-                        "Inconsistent WAV format across sentence files; cannot merge."
-                    )
-
-                writer.writeframes(reader.readframes(reader.getnframes()))
-
-            if index < len(sentence_files) - 1:
-                pause_seconds = pauses[index] if index < len(pauses) else 0.0
-                if pause_seconds > 0:
-                    silence_frames = int(params.framerate * pause_seconds)
-                    silence_bytes = (
-                        b"\x00"
-                        * silence_frames
-                        * params.nchannels
-                        * params.sampwidth
-                    )
-                    writer.writeframes(silence_bytes)
 
 
 def _initialize_tts_engine() -> Tuple[pyttsx3.Engine, Optional[Callable[[], None]]]:
@@ -199,6 +142,18 @@ def _initialize_tts_engine() -> Tuple[pyttsx3.Engine, Optional[Callable[[], None
     return engine, cleanup
 
 
+def _set_single_global_voice(engine: pyttsx3.Engine, voice_index: int = 0) -> None:
+    """Set one consistent voice globally for the whole narration."""
+    voices = engine.getProperty("voices") or []
+    if not voices:
+        return
+
+    index = int(_clamp(float(voice_index), 0, len(voices) - 1))
+    voice_id = str(getattr(voices[index], "id", ""))
+    if voice_id:
+        engine.setProperty("voice", voice_id)
+
+
 def render_emotional_speech(
     sentence_emotions: Sequence[SentenceEmotion],
     output_file: str = "output.wav",
@@ -209,12 +164,12 @@ def render_emotional_speech(
     sentence_output_dir: str = "sentence_audio",
     transition_smoothing: float = 0.0,
     play_during_generation: bool = True,
+    voice_index: int = 0,
     on_sentence_processed: Optional[Callable[[SentenceVoiceResult], None]] = None,
 ) -> List[SentenceVoiceResult]:
     """
-    Speak each sentence with dynamic voice modulation and save one merged WAV file.
-
-    Returns sentence-wise applied settings for terminal/GUI reporting.
+    Speak each sentence with dynamic modulation, pitch-shift sentence audio,
+    and merge all processed files into one final WAV.
     """
     if not sentence_emotions:
         return []
@@ -222,92 +177,109 @@ def render_emotional_speech(
     if pause_range[0] < 0 or pause_range[1] < 0 or pause_range[0] > pause_range[1]:
         raise ValueError("pause_range must be a valid non-negative (min, max) tuple.")
 
-    total_sentences = len(sentence_emotions)
     output_path = Path(output_file)
     smoothing = _clamp(transition_smoothing, 0.0, 1.0)
 
-    temp_dir: Optional[tempfile.TemporaryDirectory[str]] = None
+    temp_root = Path("temp")
+    temp_root.mkdir(parents=True, exist_ok=True)
+    run_temp_dir = Path(tempfile.mkdtemp(prefix="empathy_engine_", dir=str(temp_root)))
+    base_dir = run_temp_dir / "base"
+    processed_dir = run_temp_dir / "processed"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    export_dir: Optional[Path] = None
     if save_sentence_files:
-        sentence_dir = Path(sentence_output_dir)
-        sentence_dir.mkdir(parents=True, exist_ok=True)
-        working_dir = sentence_dir
-    else:
-        temp_dir = tempfile.TemporaryDirectory(prefix="empathy_engine_")
-        working_dir = Path(temp_dir.name)
+        export_dir = Path(sentence_output_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
 
     engine, cleanup = _initialize_tts_engine()
-    voices = engine.getProperty("voices") or []
-    default_voice_id = str(engine.getProperty("voice") or "")
+    _set_single_global_voice(engine, voice_index=voice_index)
 
-    sentence_files: List[Path] = []
+    processed_files: List[Path] = []
     pauses: List[float] = []
     results: List[SentenceVoiceResult] = []
     previous_rate: Optional[int] = None
     previous_volume: Optional[float] = None
 
     try:
-        for index, sentence_emotion in enumerate(sentence_emotions, start=1):
-            target_rate, target_volume = modulation_from_emotion(
-                emotion=sentence_emotion.emotion,
-                confidence=sentence_emotion.confidence,
-                base_rate=base_rate,
-                base_volume=base_volume,
-            )
-            applied_rate, applied_volume = _apply_transition_smoothing(
-                target_rate=target_rate,
-                target_volume=target_volume,
-                previous_rate=previous_rate,
-                previous_volume=previous_volume,
-                smoothing_factor=smoothing,
-            )
+        try:
+            total_sentences = len(sentence_emotions)
+            for index, sentence_emotion in enumerate(sentence_emotions, start=1):
+                target_rate, target_volume = modulation_from_emotion(
+                    emotion=sentence_emotion.emotion,
+                    confidence=sentence_emotion.confidence,
+                    base_rate=base_rate,
+                    base_volume=base_volume,
+                )
+                applied_rate, applied_volume = _apply_transition_smoothing(
+                    target_rate=target_rate,
+                    target_volume=target_volume,
+                    previous_rate=previous_rate,
+                    previous_volume=previous_volume,
+                    smoothing_factor=smoothing,
+                )
+                pitch_shift = pitch_shift_from_emotion(sentence_emotion.emotion)
 
-            voice_id, voice_name = _select_voice_for_emotion(
-                voices=voices,
-                emotion=sentence_emotion.emotion,
-                fallback_voice_id=default_voice_id,
-            )
+                engine.setProperty("rate", applied_rate)
+                engine.setProperty("volume", applied_volume)
 
-            engine.setProperty("voice", voice_id)
-            engine.setProperty("rate", applied_rate)
-            engine.setProperty("volume", applied_volume)
+                base_sentence_path = base_dir / f"sentence_{index:03d}.wav"
+                processed_sentence_path = processed_dir / f"processed_sentence_{index:03d}.wav"
 
-            sentence_audio_path = working_dir / f"sentence_{index:03d}.wav"
-            if play_during_generation:
-                engine.say(sentence_emotion.sentence)
-            engine.save_to_file(sentence_emotion.sentence, str(sentence_audio_path))
-            engine.runAndWait()
+                if play_during_generation:
+                    engine.say(sentence_emotion.sentence)
+                engine.save_to_file(sentence_emotion.sentence, str(base_sentence_path))
+                engine.runAndWait()
+                engine.stop()
+                _wait_for_audio_file(base_sentence_path)
+
+                change_pitch(
+                    input_file=str(base_sentence_path),
+                    output_file=str(processed_sentence_path),
+                    n_steps=pitch_shift,
+                )
+                _wait_for_audio_file(processed_sentence_path)
+
+                if export_dir is not None:
+                    shutil.copy2(base_sentence_path, export_dir / base_sentence_path.name)
+                    shutil.copy2(
+                        processed_sentence_path,
+                        export_dir / processed_sentence_path.name,
+                    )
+
+                processed_files.append(processed_sentence_path)
+
+                result = SentenceVoiceResult(
+                    sentence=sentence_emotion.sentence,
+                    emotion=sentence_emotion.emotion,
+                    confidence=sentence_emotion.confidence,
+                    rate=applied_rate,
+                    volume=applied_volume,
+                    pitch_shift=pitch_shift,
+                )
+                results.append(result)
+
+                if on_sentence_processed is not None:
+                    on_sentence_processed(result)
+
+                if index < total_sentences:
+                    pause_seconds = random.uniform(pause_range[0], pause_range[1])
+                    pauses.append(pause_seconds)
+                    time.sleep(pause_seconds)
+
+                previous_rate = applied_rate
+                previous_volume = applied_volume
+        finally:
             engine.stop()
-            _wait_for_audio_file(sentence_audio_path)
+            if cleanup is not None:
+                cleanup()
 
-            result = SentenceVoiceResult(
-                sentence=sentence_emotion.sentence,
-                emotion=sentence_emotion.emotion,
-                confidence=sentence_emotion.confidence,
-                rate=applied_rate,
-                volume=applied_volume,
-                voice_used=voice_name,
-            )
-            results.append(result)
-            sentence_files.append(sentence_audio_path)
-
-            if on_sentence_processed is not None:
-                on_sentence_processed(result)
-
-            if index < total_sentences:
-                pause_seconds = random.uniform(pause_range[0], pause_range[1])
-                pauses.append(pause_seconds)
-                time.sleep(pause_seconds)
-
-            previous_rate = applied_rate
-            previous_volume = applied_volume
+        merge_wav_files(processed_files=processed_files, output_file=output_path, pauses=pauses)
+        return results
     finally:
-        engine.stop()
-        if cleanup is not None:
-            cleanup()
-
-    _merge_wav_files(sentence_files, output_path, pauses)
-
-    if temp_dir is not None:
-        temp_dir.cleanup()
-
-    return results
+        shutil.rmtree(run_temp_dir, ignore_errors=True)
+        try:
+            temp_root.rmdir()
+        except OSError:
+            pass

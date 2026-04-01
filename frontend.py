@@ -52,7 +52,7 @@ def _result_rows(results: List[SentenceVoiceResult]) -> List[dict]:
                 "Confidence": f"{row['confidence']:.2f}",
                 "Rate": row["rate"],
                 "Volume": f"{row['volume']:.2f}",
-                "Voice": row["voice_used"],
+                "Pitch Shift (st)": f"{int(row['pitch_shift']):+d}",
             }
         )
     return rows
@@ -96,7 +96,7 @@ def _render_results() -> None:
                 confidence=float(row["Confidence"]),
                 rate=int(row["Rate"]),
                 volume=float(row["Volume"]),
-                voice_used=str(row["Voice"]),
+                pitch_shift=int(row["Pitch Shift (st)"]),
             )
         )
 
@@ -131,7 +131,7 @@ def main() -> None:
 
     with st.expander("Voice Settings", expanded=True):
         col1, col2, col3 = st.columns(3)
-        base_rate = col1.slider("Base Rate", min_value=120, max_value=220, value=170, step=1)
+        base_rate = col1.slider("Base Rate", min_value=120, max_value=230, value=170, step=1)
         base_volume = col2.slider(
             "Base Volume", min_value=0.5, max_value=1.0, value=0.9, step=0.01
         )
