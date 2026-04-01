@@ -1,120 +1,248 @@
-# Empathy Engine
+# 🧠 Empathy Engine: Emotion-Aware Speech Synthesis
 
-Empathy Engine converts paragraph input into emotionally expressive speech,
-processing one sentence at a time with transformer-based emotion detection and
-audio post-processing.
+## 🚀 Project Description
 
-We use a transformer-based emotion classification model to capture nuanced emotional context beyond simple polarity scores.
+The Empathy Engine is a system that converts text into emotionally expressive speech. Unlike traditional text-to-speech systems that sound flat and robotic, this project focuses on making the output feel more human by adapting the voice based on the emotion of the text.
 
-## Why Hugging Face Instead of TextBlob
+The system processes input text at a sentence level, detects the emotion of each sentence using a transformer-based model, and then generates speech with natural variations in tone, pacing, and delivery using neural TTS (Coqui TTS).
 
-The project uses the Hugging Face model
-`j-hartmann/emotion-english-distilroberta-base` to detect:
+---
 
-- `joy`
-- `sadness`
-- `anger`
-- `fear`
-- `surprise`
-- `neutral`
+## 🎯 Key Features
 
-Compared to polarity-only methods, this improves nuanced emotional detection and
-provides confidence scores that drive stronger modulation.
+* Sentence-level emotion detection
+* Transformer-based emotion classification (Hugging Face)
+* Neural text-to-speech using Coqui TTS
+* Dynamic emotional variation in speech output
+* Smooth transitions between sentences
+* Single consistent voice for natural flow
 
-## Updated Pipeline
+---
 
-Text -> Sentence Split -> Emotion Detection -> pyttsx3 (per sentence WAV) ->
-Pitch Shift Processing -> Merge Audio -> Final Output
+## 🏗️ Tech Stack
 
-## Features
+* **Python**
+* **Hugging Face Transformers** (emotion detection)
+* **Coqui TTS (xtts_v2)** (speech synthesis)
+* **NLTK** (sentence tokenization)
+* **Flask** (web interface)
+* **Pydub** (audio merging)
 
-- Sentence-wise processing using NLTK `sent_tokenize`
-- Transformer emotion detection per sentence (`emotion + confidence`)
-- Dynamic rate and volume modulation
-- Dynamic pitch shifting per sentence (librosa)
-- Single consistent TTS voice across all sentences
-- Smooth pauses between sentences
-- Final merged `output.wav`
-- Optional Streamlit frontend
+---
 
-## Emotion Mapping
+## ⚙️ Setup Instructions
 
-Base:
-
-- `rate = 170`
-- `volume = 0.9`
-
-Rate/volume mapping:
-
-- joy:
-  - `rate = base + score * 100`
-  - `volume = min(1.0, base + 0.2)`
-- sadness / fear:
-  - `rate = base - score * 80`
-  - `volume = max(0.5, base - 0.3)`
-- anger:
-  - `rate = base + score * 60`
-  - `volume = 1.0`
-- surprise:
-  - `rate = base + score * 120`
-- neutral:
-  - default base values
-
-Clamping:
-
-- rate: `120..230`
-- volume: `0.5..1.0`
-
-Pitch mapping (semitones):
-
-- joy -> `+2`
-- surprise -> `+3`
-- sadness -> `-2`
-- fear -> `-1`
-- anger -> `+1`
-- neutral -> `0`
-
-## Installation
+### 1. Clone the Repository
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/vish-dumps/Empathy-Engine.git
+cd Empathy-Engine
 ```
 
-Note: first run downloads the Hugging Face model and may take longer.
+---
 
-## Run
+### 2. Create Virtual Environment (Recommended)
 
-Interactive CLI:
+```bash
+python -m venv .venv
+venv\Scripts\activate.bat   # Windows
+# source venv/bin/activate   # Mac/Linux
+```
+
+---
+
+### 3. Install Dependencies
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+---
+
+### 4. Download NLTK Data
+
+```bash
+python -m nltk.downloader punkt
+```
+
+---
+
+### 5. Run the Application
+
+#### Option A: CLI Mode
 
 ```bash
 python main.py
 ```
 
-CLI with argument:
+#### Option B: With Text Input
 
 ```bash
-python main.py --text "I got promoted. I am nervous about the new role."
+python main.py --text "Your input text here"
 ```
 
-Frontend:
+#### Option C: Web Interface (if Flask implemented)
 
 ```bash
-streamlit run frontend.py
+python -m streamlit run frontend.py
 ```
 
-## Debug Output
+Then open:
 
-Per sentence, CLI prints:
+```
+http://localhost:8501
+```
 
-- sentence
-- detected emotion
-- confidence
-- rate
-- volume
-- pitch shift applied
+---
 
-## File Management
+## ▶️ How It Works
 
-- Temporary sentence files are created in `temp/` during synthesis.
-- Intermediate files are cleaned up after final merge.
-- Optional `--save-sentences` exports base and processed sentence WAV files.
+### Pipeline:
+
+```
+Text Input
+   ↓
+Sentence Segmentation
+   ↓
+Emotion Detection (Transformer Model)
+   ↓
+Emotion Mapping
+   ↓
+Speech Generation (Coqui TTS)
+   ↓
+Audio Merging
+   ↓
+Final Output (output.wav)
+```
+
+---
+
+## 🧠 Design Choices
+
+### 1. Sentence-Level Processing
+
+Instead of analyzing the entire paragraph at once, the text is split into sentences.
+This allows the system to capture mixed emotions within the same input and generate more realistic speech.
+
+---
+
+### 2. Emotion Detection
+
+We use a Hugging Face transformer model:
+
+`j-hartmann/emotion-english-distilroberta-base`
+
+This model provides fine-grained emotion labels:
+
+* joy
+* sadness
+* fear
+* anger
+* surprise
+* neutral
+
+This was chosen over basic sentiment tools because it captures context much better.
+
+---
+
+### 3. Emotion → Voice Mapping
+
+Initially, emotion was mapped manually using:
+
+* speech rate
+* volume
+* pitch (via signal processing)
+
+However, this approach was limited and often produced unnatural results.
+
+The final system uses **Coqui TTS**, where emotional expression is handled implicitly by the neural model.
+
+That said, emotion still influences:
+
+* **Pause duration**
+
+  * joy / surprise → shorter pauses
+  * sadness / fear → longer pauses
+
+* **Speech flow**
+
+  * smoother transitions between emotional shifts
+
+This combination helps maintain natural delivery without forcing artificial parameter changes.
+
+---
+
+### 4. Why Coqui TTS?
+
+Traditional TTS (like pyttsx3):
+
+* lacks pitch control
+* sounds robotic
+* requires manual tuning
+
+Coqui TTS:
+
+* generates natural prosody
+* includes pitch variation automatically
+* produces more human-like speech
+
+This significantly improved the realism of the output.
+
+---
+
+### 5. Voice Consistency
+
+The system uses a **single consistent voice** across all sentences.
+
+Using multiple voices for different emotions initially seemed like a good idea, but it reduced realism.
+A consistent voice with varying tone feels much more natural.
+
+---
+
+## 🎧 Output
+
+* Final output is saved as:
+  `output.wav`
+
+* The audio contains:
+
+  * sentence-level emotional variation
+  * smooth transitions
+  * natural speech flow
+
+---
+
+## ⚠️ Challenges & Solutions
+
+| Challenge                    | Solution                                 |
+| ---------------------------- | ---------------------------------------- |
+| Poor emotion detection       | Switched to transformer model            |
+| No pitch control in pyttsx3  | Replaced with Coqui TTS                  |
+| Robotic speech output        | Used neural TTS                          |
+| Abrupt emotional transitions | Added pauses + sentence-level processing |
+| Voice inconsistency          | Used single voice                        |
+
+---
+
+## 🚀 Future Improvements
+
+* Real-time streaming speech
+* User-selectable voice styles
+* Better control over emotion intensity
+* Multilingual support
+
+---
+
+## 📌 Conclusion
+
+This project explores how combining NLP and neural speech synthesis can make AI communication more natural and engaging.
+
+By moving from rule-based voice modulation to neural TTS, the system achieves a much more realistic and emotionally expressive output.
+
+---
+
+## 🙌 Acknowledgements
+
+* Hugging Face for transformer models
+* Coqui TTS for open-source neural speech synthesis
+* NLTK for text processing

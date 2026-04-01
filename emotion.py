@@ -45,11 +45,7 @@ def get_emotion_classifier():
     The first run downloads model weights from Hugging Face and can take time.
     """
     try:
-        return pipeline(
-            "text-classification",
-            model=MODEL_NAME,
-            return_all_scores=True,
-        )
+        return pipeline("text-classification", model=MODEL_NAME)
     except Exception as exc:
         raise RuntimeError(
             "Failed to initialize Hugging Face emotion model. "

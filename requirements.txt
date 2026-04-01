@@ -1,7 +1,9 @@
 nltk>=3.8
-pyttsx3>=2.90
-transformers>=4.44
+TTS>=0.22.0; python_version < "3.12"
+coqui-tts[codec]>=0.27.5; python_version >= "3.12"
 torch>=2.2
+torchaudio>=2.2
+transformers>=4.57,<5.0
 librosa>=0.10
 soundfile>=0.12
 pydub>=0.25

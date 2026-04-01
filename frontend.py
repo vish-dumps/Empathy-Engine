@@ -1,4 +1,4 @@
-"""Streamlit frontend for interactive Empathy Engine usage."""
+"""Streamlit frontend for Empathy Engine using Coqui TTS."""
 
 from __future__ import annotations
 
@@ -7,40 +7,15 @@ from pathlib import Path
 import shutil
 import tempfile
 from typing import Dict, List
-import zipfile
 
 import streamlit as st
 
 from emotion import analyze_sentences
+from tts_engine import SentenceTTSResult, render_emotional_speech
 from utils import split_sentences
-from voice import SentenceVoiceResult, render_emotional_speech
 
 
-def _zip_sentence_audio(sentence_dir: Path) -> bytes:
-    """Zip all sentence WAV files and return archive bytes."""
-    archive_path = sentence_dir.parent / "sentence_audio.zip"
-    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for wav_file in sorted(sentence_dir.glob("*.wav")):
-            archive.write(wav_file, arcname=wav_file.name)
-    return archive_path.read_bytes()
-
-
-def _emotion_counts(results: List[SentenceVoiceResult]) -> Dict[str, int]:
-    counts = {
-        "joy": 0,
-        "sadness": 0,
-        "anger": 0,
-        "fear": 0,
-        "surprise": 0,
-        "neutral": 0,
-    }
-    for result in results:
-        key = result.emotion.lower()
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
-def _result_rows(results: List[SentenceVoiceResult]) -> List[dict]:
+def _result_rows(results: List[SentenceTTSResult]) -> List[dict]:
     rows = []
     for index, result in enumerate(results, start=1):
         row = asdict(result)
@@ -49,24 +24,23 @@ def _result_rows(results: List[SentenceVoiceResult]) -> List[dict]:
                 "Sentence #": index,
                 "Sentence": row["sentence"],
                 "Emotion": str(row["emotion"]).title(),
-                "Confidence": f"{row['confidence']:.2f}",
-                "Rate": row["rate"],
-                "Volume": f"{row['volume']:.2f}",
-                "Pitch Shift (st)": f"{int(row['pitch_shift']):+d}",
+                "Confidance": f"{row['confidence']:.2f}",
+                "Speed (x)": f"{float(row['speed']):.2f}",
+                "Pitch Shift": f"{float(row['pitch_shift']):+.2f}",
+                "Volume Gain (x)": f"{float(row['volume_gain']):.2f}",
             }
         )
     return rows
 
 
 def _clear_previous_result_state() -> None:
-    for key in ("audio_bytes", "rows", "sentence_zip_bytes", "sentence_count"):
+    for key in ("audio_bytes", "rows", "sentence_count"):
         st.session_state.pop(key, None)
 
 
 def _render_results() -> None:
     audio_bytes = st.session_state.get("audio_bytes")
     rows = st.session_state.get("rows")
-    sentence_zip_bytes = st.session_state.get("sentence_zip_bytes")
 
     if not audio_bytes or not rows:
         return
@@ -79,29 +53,18 @@ def _render_results() -> None:
         file_name="output.wav",
         mime="audio/wav",
     )
-    if sentence_zip_bytes:
-        st.download_button(
-            "Download sentence_audio.zip",
-            data=sentence_zip_bytes,
-            file_name="sentence_audio.zip",
-            mime="application/zip",
-        )
 
-    results_for_counts = []
+    counts = {
+        "joy": 0,
+        "sadness": 0,
+        "anger": 0,
+        "fear": 0,
+        "surprise": 0,
+        "neutral": 0,
+    }
     for row in rows:
-        results_for_counts.append(
-            SentenceVoiceResult(
-                sentence=row["Sentence"],
-                emotion=str(row["Emotion"]).lower(),
-                confidence=float(row["Confidence"]),
-                rate=int(row["Rate"]),
-                volume=float(row["Volume"]),
-                pitch_shift=int(row["Pitch Shift (st)"]),
-            )
-        )
-
-    counts = _emotion_counts(results_for_counts)
-
+        key = str(row["Emotion"]).lower()
+        counts[key] = counts.get(key, 0) + 1
     c1, c2, c3 = st.columns(3)
     c1.metric("Joy", counts.get("joy", 0))
     c2.metric("Sadness", counts.get("sadness", 0))
@@ -117,41 +80,15 @@ def _render_results() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Empathy Engine", page_icon="voice", layout="wide")
+    st.set_page_config(page_title="Empathy Engine", page_icon="speech_balloon", layout="wide")
     st.title("Empathy Engine")
-    st.caption(
-        "Convert paragraph text into emotionally expressive speech with sentence-level modulation."
-    )
+    st.caption("Sentence-level emotion detection with neural speech synthesis (Coqui TTS).")
 
     input_text = st.text_area(
         "Input paragraph",
         height=220,
         placeholder="Type or paste a paragraph with multiple sentences...",
     )
-
-    with st.expander("Voice Settings", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        base_rate = col1.slider("Base Rate", min_value=120, max_value=230, value=170, step=1)
-        base_volume = col2.slider(
-            "Base Volume", min_value=0.5, max_value=1.0, value=0.9, step=0.01
-        )
-        smoothing = col3.slider(
-            "Transition Smoothing", min_value=0.0, max_value=1.0, value=0.0, step=0.05
-        )
-
-        p1, p2, p3 = st.columns(3)
-        min_pause = p1.slider("Min Pause (s)", min_value=0.0, max_value=2.0, value=0.5, step=0.1)
-        max_pause = p2.slider("Max Pause (s)", min_value=0.0, max_value=2.0, value=0.8, step=0.1)
-        live_playback = p3.checkbox(
-            "Live Speaker Playback",
-            value=False,
-            help="If enabled, audio also plays on your system speaker while generating.",
-        )
-
-        save_sentence_files = st.checkbox(
-            "Save separate audio for each sentence",
-            value=False,
-        )
 
     generate_clicked = st.button("Generate Emotional Speech", type="primary")
 
@@ -160,10 +97,6 @@ def main() -> None:
 
         if not input_text.strip():
             st.error("Input text is empty.")
-            _render_results()
-            return
-        if min_pause > max_pause:
-            st.error("Min pause must be less than or equal to max pause.")
             _render_results()
             return
 
@@ -179,30 +112,19 @@ def main() -> None:
             _render_results()
             return
 
-        with st.spinner("Analyzing sentiment and generating speech..."):
+        with st.spinner("Analyzing sentiment and generating neural speech..."):
             run_dir = Path(tempfile.mkdtemp(prefix="empathy_engine_ui_"))
             output_file = run_dir / "output.wav"
-            sentence_dir = run_dir / "sentence_audio"
 
             try:
                 results = render_emotional_speech(
                     sentence_emotions=sentence_emotions,
                     output_file=str(output_file),
-                    base_rate=base_rate,
-                    base_volume=base_volume,
-                    pause_range=(min_pause, max_pause),
-                    save_sentence_files=save_sentence_files,
-                    sentence_output_dir=str(sentence_dir),
-                    transition_smoothing=smoothing,
-                    play_during_generation=live_playback,
                 )
 
                 st.session_state["audio_bytes"] = output_file.read_bytes()
                 st.session_state["rows"] = _result_rows(results)
                 st.session_state["sentence_count"] = len(results)
-
-                if save_sentence_files:
-                    st.session_state["sentence_zip_bytes"] = _zip_sentence_audio(sentence_dir)
             except Exception as exc:
                 st.error(f"Speech generation failed: {exc}")
             finally:

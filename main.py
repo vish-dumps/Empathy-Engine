@@ -8,8 +8,8 @@ import sys
 from typing import Optional
 
 from emotion import analyze_sentences
+from tts_engine import SentenceTTSResult, render_emotional_speech
 from utils import split_sentences
-from voice import SentenceVoiceResult, render_emotional_speech
 
 
 def _read_multiline_input() -> str:
@@ -38,13 +38,21 @@ def _resolve_input_text(cli_text: Optional[str]) -> str:
     return _read_multiline_input()
 
 
-def _print_sentence_feedback(result: SentenceVoiceResult) -> None:
+def _print_sentence_feedback(result: SentenceTTSResult) -> None:
     print(f'Sentence: "{result.sentence}"')
     print(f"Emotion: {result.emotion}")
     print(f"Confidence: {result.confidence:.2f}")
-    print(f"Rate: {result.rate}")
-    print(f"Volume: {result.volume:.2f}")
-    print(f"Pitch Shift (semitones): {result.pitch_shift:+d}")
+    print(f"Speed: {result.speed:.2f}x")
+    print(f"Pause After: {result.pause_after:.2f}s")
+    print(f"Input File: {result.raw_file_generated}")
+    print(f"Output File: {result.file_generated}")
+    print(f"Pitch Shift (n_steps): {result.pitch_shift:+.2f}")
+    print(f"Volume Gain: {result.volume_gain:.2f}x")
+    print(f"Duration Before: {result.duration_before:.3f}s")
+    print(f"Duration After: {result.duration_after:.3f}s")
+    print(f"Waveform Delta: {result.waveform_delta:.6f}")
+    print(f"Pitch Applied: {result.pitch_applied}")
+    print(f"Volume Applied: {result.volume_applied}")
     print("-" * 50)
 
 
@@ -75,26 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for per-sentence WAV files when --save-sentences is used.",
     )
     parser.add_argument(
-        "--smooth",
-        type=float,
-        default=0.0,
-        help="Optional transition smoothing factor between 0.0 and 1.0.",
-    )
-    parser.add_argument("--base-rate", type=int, default=170, help="Base speech rate.")
-    parser.add_argument(
-        "--base-volume", type=float, default=0.9, help="Base volume (0.0 to 1.0)."
-    )
-    parser.add_argument(
-        "--min-pause",
-        type=float,
-        default=0.5,
-        help="Minimum pause between spoken sentences (seconds).",
-    )
-    parser.add_argument(
-        "--max-pause",
-        type=float,
-        default=0.8,
-        help="Maximum pause between spoken sentences (seconds).",
+        "--speaker-wav",
+        type=str,
+        default=None,
+        help="Optional speaker reference WAV for consistent voice cloning.",
     )
     return parser
 
@@ -102,10 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-
-    if args.min_pause > args.max_pause:
-        print("Error: --min-pause must be less than or equal to --max-pause.", file=sys.stderr)
-        return 1
 
     text = _resolve_input_text(args.text)
     if not text:
@@ -128,12 +116,9 @@ def main() -> int:
         render_emotional_speech(
             sentence_emotions=sentence_emotions,
             output_file=args.output,
-            base_rate=args.base_rate,
-            base_volume=args.base_volume,
-            pause_range=(args.min_pause, args.max_pause),
             save_sentence_files=args.save_sentences,
             sentence_output_dir=args.sentence_dir,
-            transition_smoothing=args.smooth,
+            speaker_wav=args.speaker_wav,
             on_sentence_processed=_print_sentence_feedback,
         )
     except Exception as exc:
