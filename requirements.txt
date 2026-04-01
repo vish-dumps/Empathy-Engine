@@ -1,0 +1,5 @@
+nltk>=3.8
+pyttsx3>=2.90
+transformers>=4.44
+torch>=2.2
+streamlit>=1.35
